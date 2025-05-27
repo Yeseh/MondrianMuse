@@ -2,25 +2,25 @@
 on:
   issues:
     types: [opened]
-name: Create New Abstract
+name: ✏️ Add Abstract Pull Request
 
 permissions:
   actions: read
   checks: read
-  contents: read
+  contents: write
   deployments: read
   issues: write
   discussions: read
   packages: read
   pages: read
-  pull-requests: read
+  pull-requests: write
   repository-projects: read
   security-events: read
   statuses: read
 
 jobs:
   check-user-access:
-    if: contains(github.event.issue.labels.*.name, 'abstract')
+    if: contains(github.event.issue.labels.*.name, 'abstractV2')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,14 +64,25 @@ jobs:
         echo "ESCAPED_ISSUE_BODY<<EOF" >> $GITHUB_ENV
         echo "${{ github.event.issue.body }}" | sed 's/"/\\"/g' >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
-    # Create abstract and set the step output to the abstract
-    - name: 📝 Create an abstract
+    - name: ✨ Create a pull request
+      id: create_pr
       env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
         ESCAPED_ISSUE_BODY: ${{ env.ESCAPED_ISSUE_BODY }}
       run: | 
-        python issue-based-abstracts/create-abstract_promptflow.py --answers "$ESCAPED_ISSUE_BODY" > abstract.txt
-    - run: gh issue comment $ISSUE --body "$(cat abstract.txt)"
+        git config --global user.name 'github-actions'
+        git config --global user.email 'github-actions@github.com'
+        python pr-abstracts/create-pull-request.py --answers "$ESCAPED_ISSUE_BODY" | tee output.log
+        FILE=$(grep "^FILE=" output.log | cut -d'=' -f2)
+        PR_URL=$(grep "^PR_URL=" output.log | cut -d'=' -f2)
+        PR_ID=$(echo $PR_URL | cut -d'/' -f7)
+        echo "file_path=$FILE" >> $GITHUB_OUTPUT
+        echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        echo "pr_id=$PR_ID" >> $GITHUB_OUTPUT
+    - name: 💬 Update the issue
+      run: |
+        gh issue comment $ISSUE --body "✅ Created pull request: ${{ steps.create_pr.outputs.pr_url }}"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         ISSUE: ${{ github.event.issue.html_url }}
@@ -79,23 +90,23 @@ jobs:
       env:
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
         ESCAPED_ISSUE_BODY: ${{ env.ESCAPED_ISSUE_BODY }}
-      run: | 
-        python issue-based-abstracts/review-abstract_promptflow.py --answers "$ESCAPED_ISSUE_BODY" --abstract "$(cat abstract.txt)" > review.txt
-    - run: gh issue comment $ISSUE --body "$(cat review.txt)"
-      env:
+        FILE_PATH: ${{ steps.create_pr.outputs.file_path }}
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        ISSUE: ${{ github.event.issue.html_url }}
+        PR_ID: ${{ steps.create_pr.outputs.pr_id }}
+      run: | 
+        python pr-abstracts/review-abstract_promptflow.py --answers "$ESCAPED_ISSUE_BODY" --abstract "$(cat $FILE_PATH)" > review.txt
+        gh pr comment $PR_ID --body "$(cat review.txt)"
     - name: 🧐 Critique the abstract
       env:
         AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_ID: ${{ steps.create_pr.outputs.pr_id }}
+        FILE_PATH: ${{ steps.create_pr.outputs.file_path }}
       run: | 
-        python issue-based-abstracts/writing-critic_promptflow.py --abstract "$(cat abstract.txt)" > critique.txt
-    - run: gh issue comment $ISSUE --body "$(cat critique.txt)"
+        python pr-abstracts/writing-critic_promptflow.py --abstract "$(cat $FILE_PATH)" > critique.txt
+        gh pr comment $PR_ID --body "$(cat critique.txt)"
+    - name: ⚠️ Post warning metrics
+      run: gh pr comment $PR_ID --body "$(cat pr-abstracts/warning-metrics.md)"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        ISSUE: ${{ github.event.issue.html_url }}
-    - name: 📄 Post warning metrics
-      run: gh issue comment $ISSUE --body "$(cat issue-based-abstracts/warning-metrics.md)"
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        ISSUE: ${{ github.event.issue.html_url }}
+        PR_ID: ${{ steps.create_pr.outputs.pr_id }}
